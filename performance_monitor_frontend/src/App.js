@@ -5,6 +5,7 @@ import AlertsPage from "./pages/AlertsPage";
 import RecommendationsPage from "./pages/RecommendationsPage";
 import SettingsPage from "./pages/SettingsPage";
 import InstancesPage from "./pages/InstancesPage";
+import ToastHost from "./components/ToastHost";
 import "./App.css";
 
 function SidebarLink({ to, icon, label }) {
@@ -37,6 +38,7 @@ function App() {
 
   return (
     <div className="App">
+      <ToastHost />
       <div className="pm-shell">
         <aside className="pm-sidebar" aria-label="Primary navigation">
           <div className="pm-brand">
