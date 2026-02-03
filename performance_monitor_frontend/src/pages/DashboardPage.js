@@ -9,9 +9,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import Badge from "../components/Badge";
 import EmptyState from "../components/EmptyState";
+import InlineError from "../components/InlineError";
+import LoadingSkeleton from "../components/LoadingSkeleton";
+import { toast } from "../components/ToastHost";
 import { config } from "../lib/config";
 import { getMetricsSnapshot, getMetricsTimeseries, tryHealthCheck } from "../lib/metricsService";
+import { useDebouncedCallback, useFailureToastGate, useNetworkStatus, isLikelyNetworkError } from "../lib/uiState";
 import { useWebSocketConnection } from "../lib/wsHooks";
 
 function formatCompact(n) {
@@ -112,6 +117,7 @@ function MetricWidget({ label, value, unit, hint, tone = "default", loading = fa
         boxShadow: "0 10px 30px rgba(17,24,39,0.08)",
         minHeight: 102,
       }}
+      aria-busy={loading ? "true" : "false"}
     >
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
         <div style={{ fontFamily: "var(--pm-mono)", fontSize: 12, color: "rgba(17,24,39,0.70)" }}>{label}</div>
@@ -121,7 +127,7 @@ function MetricWidget({ label, value, unit, hint, tone = "default", loading = fa
       </div>
 
       <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, letterSpacing: 0.3 }}>
-        {loading ? <span style={{ color: "rgba(17,24,39,0.55)" }}>Loading…</span> : value ?? "—"}
+        {loading ? <span style={{ color: "rgba(17,24,39,0.55)" }}>—</span> : value ?? "—"}
       </div>
 
       {hint ? <div style={{ marginTop: 6, fontSize: 12, color: "rgba(17,24,39,0.65)" }}>{hint}</div> : null}
@@ -129,7 +135,19 @@ function MetricWidget({ label, value, unit, hint, tone = "default", loading = fa
   );
 }
 
-function ChartCard({ title, subtitle, children, status, error, emptyTitle, emptyDescription, rightSlot }) {
+function ChartCard({
+  title,
+  subtitle,
+  children,
+  status,
+  error,
+  emptyTitle,
+  emptyDescription,
+  rightSlot,
+  onRetry,
+  retryDisabled,
+  offline,
+}) {
   return (
     <div className="pm-card" style={{ padding: 16 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
@@ -144,27 +162,33 @@ function ChartCard({ title, subtitle, children, status, error, emptyTitle, empty
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {rightSlot}
-          {status === "loading" ? (
-            <span className="pm-badge" aria-label="Loading">
-              Loading
-            </span>
-          ) : status === "error" ? (
-            <span className="pm-badge" style={{ borderColor: "rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.10)" }}>
-              Error
-            </span>
-          ) : null}
+          {status === "loading" ? <Badge tone="muted">Loading</Badge> : status === "error" ? <Badge tone="danger">Error</Badge> : null}
         </div>
       </div>
 
       <div style={{ height: 240, marginTop: 12 }}>
         {status === "loading" ? (
-          <div className="pm-muted" style={{ padding: 10 }}>
-            Loading chart…
+          <div aria-live="polite">
+            <div className="sr-only">Loading chart</div>
+            <div className="pm-card" style={{ padding: 12, height: "100%", background: "rgba(17,24,39,0.01)" }}>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ width: "30%", height: 12, borderRadius: 999, background: "rgba(17,24,39,0.06)" }} />
+                  <div style={{ width: "18%", height: 12, borderRadius: 999, background: "rgba(17,24,39,0.06)" }} />
+                </div>
+                <div style={{ flex: 1, height: 170, borderRadius: 14, background: "rgba(17,24,39,0.04)" }} />
+                <div style={{ width: "44%", height: 12, borderRadius: 999, background: "rgba(17,24,39,0.06)" }} />
+              </div>
+            </div>
           </div>
         ) : status === "error" ? (
-          <div className="pm-alert pm-alert-error" style={{ marginTop: 0 }}>
-            {error || "Failed to load chart."}
-          </div>
+          <InlineError
+            title="Chart failed to load"
+            message={error || "Failed to load chart."}
+            onRetry={onRetry}
+            disabled={retryDisabled}
+            offline={offline}
+          />
         ) : children === null ? (
           <EmptyState title={emptyTitle || "No data"} description={emptyDescription || "No datapoints in this time range."} />
         ) : (
@@ -202,8 +226,10 @@ function normalizeSeries(raw) {
 // PUBLIC_INTERFACE
 export default function DashboardPage() {
   /** Dashboard page: metric widgets + timeseries charts with rollup-aware range passing (from/to). */
-  const [health, setHealth] = useState({ status: "idle", details: null, error: null });
+  const { online } = useNetworkStatus();
+  const toastOnRepeatFailure = useFailureToastGate({ title: "Dashboard still failing" });
 
+  const [health, setHealth] = useState({ status: "idle", details: null, error: null });
   const [rangeKey, setRangeKey] = useState("1h");
   const range = useMemo(() => computeRangeFromKey(rangeKey), [rangeKey]);
 
@@ -212,6 +238,7 @@ export default function DashboardPage() {
     snapshot: null,
     series: [],
     error: null,
+    errorKind: null, // "network" | "other"
   });
 
   // Feature flags for metrics mock/real live in metricsService (metricsApi=mock|real).
@@ -237,55 +264,71 @@ export default function DashboardPage() {
 
   const rangeLabel = useMemo(() => formatRangeLabel(range.from, range.to, rangeKey), [range.from, range.to, rangeKey]);
 
+  async function loadHealth() {
+    setHealth({ status: "loading", details: null, error: null });
+    const result = await tryHealthCheck();
+    if (result.ok) setHealth({ status: "ok", details: result.details, error: null });
+    else setHealth({ status: "error", details: null, error: result.error });
+  }
+
+  async function loadMetrics() {
+    setMetrics({ status: "loading", snapshot: null, series: [], error: null, errorKind: null });
+
+    try {
+      // IMPORTANT: pass from/to so backend can auto-select rollups for long ranges.
+      const [snapshot, ts] = await Promise.all([
+        getMetricsSnapshot({ instanceId, from: range.from, to: range.to }),
+        getMetricsTimeseries({ instanceId, from: range.from, to: range.to }),
+      ]);
+
+      setMetrics({ status: "ready", snapshot, series: ts || [], error: null, errorKind: null });
+    } catch (err) {
+      const networkish = isLikelyNetworkError(err) || !online;
+      toastOnRepeatFailure(err);
+
+      setMetrics({
+        status: "error",
+        snapshot: null,
+        series: [],
+        error: err?.message || "Failed to load metrics.",
+        errorKind: networkish ? "network" : "other",
+      });
+    }
+  }
+
+  const debouncedRetry = useDebouncedCallback(async () => {
+    try {
+      await loadHealth();
+      await loadMetrics();
+      toast({ title: "Refreshed", message: "Dashboard data reloaded.", tone: "success" });
+    } catch {
+      // load* already set state; no-op here
+    }
+  }, 700);
+
   useEffect(() => {
     let cancelled = false;
-
-    async function run() {
-      setHealth({ status: "loading", details: null, error: null });
-      const result = await tryHealthCheck();
+    (async () => {
       if (cancelled) return;
-
-      if (result.ok) setHealth({ status: "ok", details: result.details, error: null });
-      else setHealth({ status: "error", details: null, error: result.error });
-    }
-
-    run();
+      await loadHealth();
+    })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-
-    async function run() {
-      setMetrics({ status: "loading", snapshot: null, series: [], error: null });
-
-      try {
-        // IMPORTANT: pass from/to so backend can auto-select rollups for long ranges.
-        const [snapshot, ts] = await Promise.all([
-          getMetricsSnapshot({ instanceId, from: range.from, to: range.to }),
-          getMetricsTimeseries({ instanceId, from: range.from, to: range.to }),
-        ]);
-        if (cancelled) return;
-
-        setMetrics({ status: "ready", snapshot, series: ts || [], error: null });
-      } catch (err) {
-        if (cancelled) return;
-        setMetrics({
-          status: "error",
-          snapshot: null,
-          series: [],
-          error: err?.message || "Failed to load metrics.",
-        });
-      }
-    }
-
-    run();
+    (async () => {
+      if (cancelled) return;
+      await loadMetrics();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [instanceId, range.from, range.to]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId, range.from, range.to, online]);
 
   const connectionsValue =
     metrics.snapshot && (metrics.snapshot.connections ?? metrics.snapshot.conn) !== undefined
@@ -352,16 +395,31 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {health.status === "error" ? (
-        <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }}>
-          Backend health check failed: {health.error}
+      {!online ? (
+        <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }} role="alert">
+          <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Offline</div>
+          <div style={{ marginTop: 6 }}>You appear to be offline. Reconnect to refresh dashboard data.</div>
         </div>
       ) : null}
 
+      {health.status === "error" ? (
+        <InlineError
+          title="Backend health check failed"
+          message={health.error}
+          onRetry={debouncedRetry}
+          disabled={health.status === "loading" || metrics.status === "loading"}
+          offline={!online}
+        />
+      ) : null}
+
       {metrics.status === "error" ? (
-        <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }}>
-          Metrics load failed: {metrics.error}
-        </div>
+        <InlineError
+          title="Metrics load failed"
+          message={metrics.error}
+          onRetry={debouncedRetry}
+          disabled={metrics.status === "loading"}
+          offline={metrics.errorKind === "network" || !online}
+        />
       ) : null}
 
       <div
@@ -413,6 +471,9 @@ export default function DashboardPage() {
             error={metrics.error}
             emptyTitle="No connection data"
             emptyDescription="No datapoints returned for this time range."
+            onRetry={debouncedRetry}
+            retryDisabled={metrics.status === "loading"}
+            offline={metrics.errorKind === "network" || !online}
           >
             {!hasSeries ? null : (
               <ResponsiveContainer width="100%" height="100%">
@@ -468,6 +529,9 @@ export default function DashboardPage() {
             error={metrics.error}
             emptyTitle="No throughput data"
             emptyDescription="No datapoints returned for this time range."
+            onRetry={debouncedRetry}
+            retryDisabled={metrics.status === "loading"}
+            offline={metrics.errorKind === "network" || !online}
           >
             {!hasSeries ? null : (
               <ResponsiveContainer width="100%" height="100%">

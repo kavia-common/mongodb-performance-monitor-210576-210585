@@ -4,8 +4,10 @@ import Badge from "../components/Badge";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import FilterBar from "../components/FilterBar";
+import InlineError from "../components/InlineError";
 import LoadingSkeleton from "../components/LoadingSkeleton";
 import { toast } from "../components/ToastHost";
+import { isLikelyNetworkError, useDebouncedCallback, useFailureToastGate, useNetworkStatus } from "../lib/uiState";
 import {
   createAlertRule,
   deleteAlertRule,
@@ -85,11 +87,15 @@ function normalizeEvent(x) {
 // PUBLIC_INTERFACE
 export default function AlertsPage() {
   /** Alerts page: manage alert rules and browse alert events feed. */
-  const [rulesState, setRulesState] = useState({ status: "idle", items: [], error: null });
+  const { online } = useNetworkStatus();
+  const toastOnRepeatFailure = useFailureToastGate({ title: "Alerts still failing" });
+
+  const [rulesState, setRulesState] = useState({ status: "idle", items: [], error: null, errorKind: null });
   const [eventsState, setEventsState] = useState({
     status: "idle",
     items: [],
     error: null,
+    errorKind: null,
     nextCursor: null,
     hasMore: true,
   });
@@ -118,25 +124,33 @@ export default function AlertsPage() {
   );
 
   async function loadRules() {
-    setRulesState((s) => ({ ...s, status: "loading", error: null }));
+    setRulesState((s) => ({ ...s, status: "loading", error: null, errorKind: null }));
     try {
       const data = await listAlertRules({ instanceId: filters.instanceId || undefined });
-      setRulesState({ status: "ready", items: data.items || [], error: null });
+      setRulesState({ status: "ready", items: data.items || [], error: null, errorKind: null });
     } catch (err) {
       // If endpoint missing, show empty (acceptance: fallback gracefully)
       if (err?.status === 404) {
-        setRulesState({ status: "ready", items: [], error: null });
+        setRulesState({ status: "ready", items: [], error: null, errorKind: null });
         return;
       }
-      setRulesState({ status: "error", items: [], error: err?.message || "Failed to load alert rules." });
+
+      const networkish = isLikelyNetworkError(err) || !online;
+      toastOnRepeatFailure(err);
+      setRulesState({
+        status: "error",
+        items: [],
+        error: err?.message || "Failed to load alert rules.",
+        errorKind: networkish ? "network" : "other",
+      });
     }
   }
 
   async function loadEvents({ reset }) {
     if (reset) {
-      setEventsState({ status: "loading", items: [], error: null, nextCursor: null, hasMore: true });
+      setEventsState({ status: "loading", items: [], error: null, errorKind: null, nextCursor: null, hasMore: true });
     } else {
-      setEventsState((s) => ({ ...s, status: s.status === "ready" ? "loadingMore" : "loading", error: null }));
+      setEventsState((s) => ({ ...s, status: s.status === "ready" ? "loadingMore" : "loading", error: null, errorKind: null }));
     }
 
     try {
@@ -162,19 +176,24 @@ export default function AlertsPage() {
           status: "ready",
           items: merged,
           error: null,
+          errorKind: null,
           nextCursor,
           hasMore,
         };
       });
     } catch (err) {
       if (err?.status === 404) {
-        setEventsState({ status: "ready", items: [], error: null, nextCursor: null, hasMore: false });
+        setEventsState({ status: "ready", items: [], error: null, errorKind: null, nextCursor: null, hasMore: false });
         return;
       }
+
+      const networkish = isLikelyNetworkError(err) || !online;
+      toastOnRepeatFailure(err);
       setEventsState((prev) => ({
         ...prev,
         status: "error",
         error: err?.message || "Failed to load alert events.",
+        errorKind: networkish ? "network" : "other",
       }));
     }
   }
@@ -297,6 +316,9 @@ export default function AlertsPage() {
 
   const selected = ui.selectedEvent;
 
+  const retryRules = useDebouncedCallback(() => loadRules(), 650);
+  const retryEvents = useDebouncedCallback(() => loadEvents({ reset: true }), 650);
+
   return (
     <div className="pm-card">
       <div className="pm-page-header">
@@ -307,6 +329,12 @@ export default function AlertsPage() {
             Configure alert rules and review the events feed. If the backend endpoints aren’t available yet, the page will
             gracefully show empty states.
           </p>
+          {!online ? (
+            <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }} role="alert">
+              <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Offline</div>
+              <div style={{ marginTop: 6 }}>Reconnect to fetch rules/events, then retry.</div>
+            </div>
+          ) : null}
         </div>
 
         <div className="pm-row pm-row-right">
@@ -410,16 +438,20 @@ export default function AlertsPage() {
 
             {rulesState.status === "loading" ? (
               <div style={{ marginTop: 12 }}>
-                <LoadingSkeleton rows={4} />
+                <LoadingSkeleton rows={5} variant="table" label="Loading alert rules" />
               </div>
             ) : rulesState.status === "error" ? (
-              <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }}>
-                {rulesState.error}
-              </div>
+              <InlineError
+                title="Couldn’t load alert rules"
+                message={rulesState.error}
+                onRetry={retryRules}
+                disabled={rulesState.status === "loading"}
+                offline={rulesState.errorKind === "network" || !online}
+              />
             ) : normalizedRules.length === 0 ? (
               <EmptyState
-                title="No alert rules"
-                description="Create a rule to start generating alert events for your MongoDB instances."
+                title="No alerts yet"
+                description="Create your first rule to start generating alert events for your MongoDB instances."
                 action={
                   <button type="button" className="pm-btn pm-btn-primary" onClick={openCreateRule}>
                     + New rule
@@ -484,15 +516,24 @@ export default function AlertsPage() {
             </div>
 
             {eventsState.status === "loading" ? (
-              <LoadingSkeleton rows={7} />
+              <LoadingSkeleton rows={7} variant="table" label="Loading alert events" />
             ) : eventsState.status === "error" ? (
-              <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }}>
-                {eventsState.error}
-              </div>
+              <InlineError
+                title="Couldn’t load events"
+                message={eventsState.error}
+                onRetry={retryEvents}
+                disabled={eventsState.status === "loading" || eventsState.status === "loadingMore"}
+                offline={eventsState.errorKind === "network" || !online}
+              />
             ) : eventsState.items.length === 0 ? (
               <EmptyState
-                title="No events"
-                description="No alert events match the current filters/timeframe. If you just created rules, wait for the next poll cycle."
+                title="No alerts yet"
+                description="No events match the current timeframe/filters. If you just created rules, give it a moment and refresh."
+                action={
+                  <button type="button" className="pm-btn pm-btn-secondary" onClick={retryEvents} disabled={!online}>
+                    Refresh
+                  </button>
+                }
               />
             ) : (
               <>

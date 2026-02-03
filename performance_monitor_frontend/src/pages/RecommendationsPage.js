@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import Badge from "../components/Badge";
 import EmptyState from "../components/EmptyState";
 import FilterBar from "../components/FilterBar";
+import InlineError from "../components/InlineError";
 import LoadingSkeleton from "../components/LoadingSkeleton";
 import { toast } from "../components/ToastHost";
+import { isLikelyNetworkError, useDebouncedCallback, useFailureToastGate, useNetworkStatus } from "../lib/uiState";
 import {
   applyRecommendation,
   dismissRecommendation,
@@ -55,7 +57,10 @@ function formatWhen(iso) {
 // PUBLIC_INTERFACE
 export default function RecommendationsPage() {
   /** Recommendations page: list persisted tuning recommendations; update status with optimistic UI. */
-  const [state, setState] = useState({ status: "idle", items: [], error: null });
+  const { online } = useNetworkStatus();
+  const toastOnRepeatFailure = useFailureToastGate({ title: "Recommendations still failing" });
+
+  const [state, setState] = useState({ status: "idle", items: [], error: null, errorKind: null });
   const [filters, setFilters] = useState({
     instanceId: "",
     type: "",
@@ -67,7 +72,7 @@ export default function RecommendationsPage() {
   const [busyId, setBusyId] = useState(null);
 
   async function load() {
-    setState((s) => ({ ...s, status: "loading", error: null }));
+    setState((s) => ({ ...s, status: "loading", error: null, errorKind: null }));
     try {
       const data = await listRecommendations({
         instanceId: filters.instanceId || undefined,
@@ -76,13 +81,21 @@ export default function RecommendationsPage() {
         severity: filters.severity || undefined,
         impact: filters.impact || undefined,
       });
-      setState({ status: "ready", items: data.items || [], error: null });
+      setState({ status: "ready", items: data.items || [], error: null, errorKind: null });
     } catch (err) {
       if (err?.status === 404) {
-        setState({ status: "ready", items: [], error: null });
+        setState({ status: "ready", items: [], error: null, errorKind: null });
         return;
       }
-      setState({ status: "error", items: [], error: err?.message || "Failed to load recommendations." });
+
+      const networkish = isLikelyNetworkError(err) || !online;
+      toastOnRepeatFailure(err);
+      setState({
+        status: "error",
+        items: [],
+        error: err?.message || "Failed to load recommendations.",
+        errorKind: networkish ? "network" : "other",
+      });
     }
   }
 
@@ -133,6 +146,8 @@ export default function RecommendationsPage() {
     }
   }
 
+  const retryLoad = useDebouncedCallback(() => load(), 650);
+
   return (
     <div className="pm-card">
       <div className="pm-page-header">
@@ -143,10 +158,16 @@ export default function RecommendationsPage() {
             Actionable performance guidance (indexing/pooling/TTL). Update statuses with optimistic UI; if backend endpoints
             are missing, the page shows graceful empty states.
           </p>
+          {!online ? (
+            <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }} role="alert">
+              <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Offline</div>
+              <div style={{ marginTop: 6 }}>Reconnect to load recommendations, then retry.</div>
+            </div>
+          ) : null}
         </div>
 
         <div className="pm-row pm-row-right">
-          <button type="button" className="pm-btn pm-btn-secondary" onClick={load} disabled={state.status === "loading"}>
+          <button type="button" className="pm-btn pm-btn-secondary" onClick={retryLoad} disabled={state.status === "loading"}>
             Refresh
           </button>
         </div>
@@ -199,13 +220,25 @@ export default function RecommendationsPage() {
               <label className="pm-label" htmlFor="rSev">
                 Severity
               </label>
-              <input id="rSev" className="pm-input" value={filters.severity} onChange={(e) => setFilter("severity", e.target.value)} placeholder="optional" />
+              <input
+                id="rSev"
+                className="pm-input"
+                value={filters.severity}
+                onChange={(e) => setFilter("severity", e.target.value)}
+                placeholder="optional"
+              />
             </div>
             <div className="pm-field" style={{ minWidth: 160 }}>
               <label className="pm-label" htmlFor="rImpact">
                 Impact
               </label>
-              <input id="rImpact" className="pm-input" value={filters.impact} onChange={(e) => setFilter("impact", e.target.value)} placeholder="optional" />
+              <input
+                id="rImpact"
+                className="pm-input"
+                value={filters.impact}
+                onChange={(e) => setFilter("impact", e.target.value)}
+                placeholder="optional"
+              />
             </div>
             <button
               type="button"
@@ -218,19 +251,23 @@ export default function RecommendationsPage() {
         }
       />
 
-      {state.status === "loading" ? <LoadingSkeleton rows={8} /> : null}
+      {state.status === "loading" ? <LoadingSkeleton rows={8} variant="table" label="Loading recommendations" /> : null}
       {state.status === "error" ? (
-        <div className="pm-alert pm-alert-error" style={{ marginTop: 12 }}>
-          {state.error}
-        </div>
+        <InlineError
+          title="Couldn’t load recommendations"
+          message={state.error}
+          onRetry={retryLoad}
+          disabled={state.status === "loading"}
+          offline={state.errorKind === "network" || !online}
+        />
       ) : null}
 
       {state.status === "ready" && normalized.length === 0 ? (
         <EmptyState
-          title="No recommendations"
-          description="No persisted recommendations match your filters. If your backend supports refresh, it may generate items after collecting metrics."
+          title="No recommendations yet"
+          description="No recommendations match your filters. If your backend generates insights from metrics, try refreshing after a bit of data collection."
           action={
-            <button type="button" className="pm-btn pm-btn-secondary" onClick={load}>
+            <button type="button" className="pm-btn pm-btn-secondary" onClick={retryLoad} disabled={!online}>
               Refresh
             </button>
           }
