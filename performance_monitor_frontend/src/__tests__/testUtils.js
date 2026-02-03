@@ -4,8 +4,12 @@ import { render } from "@testing-library/react";
 
 /** Flush pending promises in React tests. */
 export async function flushPromises() {
-  // One tick for pending microtasks
+  // Drain microtasks
   await Promise.resolve();
+  await Promise.resolve();
+
+  // Allow any setTimeout(0)/queued tasks to run in jsdom environment
+  await new Promise((r) => setTimeout(r, 0));
 }
 
 /** Render helper with MemoryRouter and initial route. */

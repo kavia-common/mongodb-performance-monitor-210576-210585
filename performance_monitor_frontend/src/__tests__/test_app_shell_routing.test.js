@@ -9,7 +9,7 @@ test("renders app shell and navigates between pages via sidebar", async () => {
   renderWithRouter(<App />, { route: "/dashboard" });
 
   expect(screen.getByRole("navigation", { name: /primary navigation/i })).toBeInTheDocument();
-  expect(screen.getByText(/MongoDB Performance Overview/i)).toBeInTheDocument();
+  expect(await screen.findByText(/MongoDB Performance Overview/i)).toBeInTheDocument();
 
   await user.click(screen.getByRole("link", { name: /Alerts/i }));
   expect(await screen.findByText(/Performance Alerts/i)).toBeInTheDocument();

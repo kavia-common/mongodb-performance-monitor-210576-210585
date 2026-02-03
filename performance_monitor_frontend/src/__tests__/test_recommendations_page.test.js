@@ -34,15 +34,15 @@ test("renders list and can apply/dismiss/restore", async () => {
   render(<RecommendationsPage />);
 
   expect(await screen.findByRole("table", { name: /recommendations table/i })).toBeInTheDocument();
-  expect(screen.getByText(/Add an index/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Add an index/i)).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: /Apply/i }));
+  await user.click(await screen.findByRole("button", { name: /Apply/i }));
   await waitFor(() => expect(recsService.applyRecommendation).toHaveBeenCalledWith("rec1"));
 
-  await user.click(screen.getByRole("button", { name: /Dismiss/i }));
+  await user.click(await screen.findByRole("button", { name: /Dismiss/i }));
   await waitFor(() => expect(recsService.dismissRecommendation).toHaveBeenCalledWith("rec1"));
 
-  await user.click(screen.getByRole("button", { name: /Restore/i }));
+  await user.click(await screen.findByRole("button", { name: /Restore/i }));
   await waitFor(() => expect(recsService.restoreRecommendation).toHaveBeenCalledWith("rec1"));
 });
 
@@ -63,7 +63,7 @@ test("on status update failure, reloads list", async () => {
 
   expect(await screen.findByText(/Tune pooling/i)).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: /Apply/i }));
+  await user.click(await screen.findByRole("button", { name: /Apply/i }));
   await waitFor(() => expect(recsService.applyRecommendation).toHaveBeenCalledWith("rec1"));
   await waitFor(() => expect(recsService.listRecommendations).toHaveBeenCalledTimes(2));
 });

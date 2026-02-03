@@ -49,11 +49,11 @@ test("create flow calls createInstance then reloads list", async () => {
   await user.click(screen.getByRole("button", { name: /\+ Add instance/i }));
 
   // Modal fields are defined in InstanceFormModal; we target the common ones by label text
-  await user.type(screen.getByLabelText(/Name/i), "New");
+  await user.type(await screen.findByLabelText(/Name/i), "New");
   await user.type(screen.getByLabelText(/Host/i), "localhost");
   await user.type(screen.getByLabelText(/Port/i), "27017");
 
-  await user.click(screen.getByRole("button", { name: /Save/i }));
+  await user.click(await screen.findByRole("button", { name: /Save/i }));
 
   await waitFor(() => expect(instancesService.createInstance).toHaveBeenCalled());
   await waitFor(() => expect(instancesService.listInstances).toHaveBeenCalledTimes(2));

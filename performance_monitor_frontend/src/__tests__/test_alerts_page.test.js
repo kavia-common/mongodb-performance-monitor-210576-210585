@@ -36,9 +36,11 @@ test("renders rules table and allows toggling enable (optimistic)", async () => 
   render(<AlertsPage />);
 
   expect(await screen.findByRole("table", { name: /alert rules table/i })).toBeInTheDocument();
-  expect(screen.getByText("Rule 1")).toBeInTheDocument();
+  expect(await screen.findByText("Rule 1")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: /Disable/i }));
+  const disableBtn = await screen.findByRole("button", { name: /Disable/i });
+  await user.click(disableBtn);
+
   await waitFor(() => expect(alertsService.setAlertRuleEnabled).toHaveBeenCalledWith("r1", false));
 });
 
