@@ -70,7 +70,7 @@ function MetricWidget({ label, value, unit, hint, tone = "default" }) {
   );
 }
 
-function ChartCard({ title, subtitle, children }) {
+function ChartCard({ title, subtitle, children, status, error }) {
   return (
     <div className="pm-card" style={{ padding: 16 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
@@ -82,8 +82,30 @@ function ChartCard({ title, subtitle, children }) {
             </div>
           ) : null}
         </div>
+        {status === "loading" ? (
+          <span className="pm-badge" aria-label="Loading">
+            Loading
+          </span>
+        ) : status === "error" ? (
+          <span className="pm-badge" style={{ borderColor: "rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.10)" }}>
+            Error
+          </span>
+        ) : null}
       </div>
-      <div style={{ height: 220, marginTop: 12 }}>{children}</div>
+
+      <div style={{ height: 220, marginTop: 12 }}>
+        {status === "loading" ? (
+          <div className="pm-muted" style={{ padding: 10 }}>
+            Loading chart...
+          </div>
+        ) : status === "error" ? (
+          <div className="pm-alert pm-alert-error" style={{ marginTop: 0 }}>
+            {error || "Failed to load chart."}
+          </div>
+        ) : (
+          children
+        )}
+      </div>
     </div>
   );
 }
@@ -210,7 +232,13 @@ export default function DashboardPage() {
         <div style={{ gridColumn: "span 4" }}>
           <MetricWidget
             label="Active connections"
-            value={metrics.snapshot ? formatCompact(metrics.snapshot.connections) : "—"}
+            value={
+              metrics.status === "loading"
+                ? "Loading..."
+                : metrics.snapshot
+                  ? formatCompact(metrics.snapshot.connections)
+                  : "—"
+            }
             unit="count"
             hint="Current client connections (approx)."
             tone="default"
@@ -220,7 +248,13 @@ export default function DashboardPage() {
         <div style={{ gridColumn: "span 4" }}>
           <MetricWidget
             label="Operations / sec"
-            value={metrics.snapshot ? formatCompact(metrics.snapshot.opsPerSec) : "—"}
+            value={
+              metrics.status === "loading"
+                ? "Loading..."
+                : metrics.snapshot
+                  ? formatCompact(metrics.snapshot.opsPerSec)
+                  : "—"
+            }
             unit="ops/s"
             hint="Throughput trend; spikes often correlate with load."
             tone="success"
@@ -230,7 +264,13 @@ export default function DashboardPage() {
         <div style={{ gridColumn: "span 4" }}>
           <MetricWidget
             label="Slow operations"
-            value={metrics.snapshot ? formatCompact(metrics.snapshot.slowOpsPerMin) : "—"}
+            value={
+              metrics.status === "loading"
+                ? "Loading..."
+                : metrics.snapshot
+                  ? formatCompact(metrics.snapshot.slowOpsPerMin)
+                  : "—"
+            }
             unit="per min"
             hint="High values suggest indexing or query shape issues."
             tone={metrics.snapshot?.slowOpsPerMin > 8 ? "danger" : "default"}
@@ -238,7 +278,12 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ gridColumn: "span 6" }}>
-          <ChartCard title="Connections (last 5m)" subtitle="REST snapshot (WS live updates later)">
+          <ChartCard
+            title="Connections (last 5m)"
+            subtitle="REST snapshot (WS live updates later)"
+            status={metrics.status}
+            error={metrics.error}
+          >
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={metrics.series || []} margin={{ top: 10, right: 12, left: -4, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(17,24,39,0.10)" strokeDasharray="4 6" />
@@ -270,7 +315,7 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ gridColumn: "span 6" }}>
-          <ChartCard title="Ops/sec (last 5m)" subtitle="Throughput trend">
+          <ChartCard title="Ops/sec (last 5m)" subtitle="Throughput trend" status={metrics.status} error={metrics.error}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={metrics.series || []} margin={{ top: 10, right: 12, left: -4, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(17,24,39,0.10)" strokeDasharray="4 6" />
